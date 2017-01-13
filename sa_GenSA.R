@@ -1,5 +1,4 @@
-sink('sa_GenSA.output')
-source('~/supercoiling/Software/R_mylib/preloadsettings.R')
+options(stringsAsFactors=FALSE)
 
 library(GenSA)
 source('QPsig.R')
@@ -7,180 +6,181 @@ library(deconstructSigs)
 library(quadprog)
 
 ReadMutationalProfile <- function(file) {
+  #Read data as a matrix
   return(data.matrix(read.table(file, sep='\t', header=T, row.names=1, check.names=F)))
 }
 
-cosmic = ReadMutationalProfile('../data/cosmic_signatures_probabilities.txt')
-spectra = ReadMutationalProfile('../data/mutation_spectra_BRCA-EU.txt')
-spectra = spectra[match(rownames(cosmic),rownames(spectra)), ,drop=F] #match mutations to cosmic order as in file
+DecompositionError <- function(observation, weights, signatures) {
+  #Squared root of squared sum of errors
+  #Remove NA by replacing it with 0
+  weights.noNA = weights
+  weights.noNA[is.na(weights.noNA)] = 0
+  return(sqrt(sum((observation - signatures %*% weights.noNA)^2)))
+}
 
 RunGenSA <- function(spectrum, signatures, control) {
+  #Wrapper for GenSA function to run simulated annealing
   K = ncol(signatures)
-
-  #objective function to compute estmation error
-  DecompositionError <- function(weights) {
-    #fn.call <<- fn.call + 1
+  DecompositionError.local <- function(weights) {
+    #objective function to compute estmation error
     estimate = signatures %*% weights
-    sse = sqrt(sum((spectrum - (estimate / sum(estimate)))^2))
-    return(sse)
+    return(sqrt(sum((spectrum - (estimate / sum(estimate)))^2)))
   }
 
   #run GenSA
-  sa_out = GenSA(par=NULL, lower=rep(0.0,K), upper=rep(1.0,K),
-    fn=DecompositionError,
-    control=control)
-
-  return(sa_out)
+  sa = GenSA(par=NULL, lower=rep(0.0,K), upper=rep(1.0,K), fn=DecompositionError.local, control=control)
+  return(sa)
 }
 
-RunGenSATrialsWithIncreasedError <- function(spectrum, signatures, N, error.perc) {
-  #run long SA to determine best solution using default params
-  gsa_best = RunGenSA(spectrum, signatures, control=list(simple.function=T))
-
-  #run N trials allowing higher solution error to sample landscape of almost optiomal solutions
+RunGenSATrialsWithDesiredError <- function(spectrum, signatures, N, desired.error) {
+  #run N trials until reaching expected error to sample landscape of almost optimal solutions
   error = rep(0.0, N)
   weights = matrix(0.0, ncol=ncol(signatures), nrow=N)
   colnames(weights) = colnames(signatures)
+  #repeat the simulation N times
   for(i in seq(N)) {
     #reduce maximum number of iterations of the algorithm (the algorithm restarts anyway after 1282 iterations)
     #reduce temperature; we want to explore params around optimal solution (it is a convex function so there is no other local minimum)
-    #increase optimal error (found above) by 'error.perc' percent
-    gsa = RunGenSA(spectrum, signatures, list(maxit=1282, temperature=100, threshold.stop=gsa_best$value*(1+error.perc), simple.function=T))
-    error[i] = gsa$value
-    weights[i,] = gsa$par/sum(gsa$par)
+    #stop when there is no improvement in 1000 steps as this is simple function
+    #stop when reaching desired error (higher then in optimal solution)
+    sa = RunGenSA(spectrum, signatures, list(maxit=1000, temperature=100,
+      threshold.stop=desired.error, nb.stop.improvement=1000, simple.function=T))
+    #record results
+    error[i] = sa$value
+    weights[i,] = sa$par/sum(sa$par) #normalize weights to 1
   }
-
-  return(list(error=error, weights=weights, long=list(error=gsa_best$value, weights=gsa_best$par/sum(gsa_best$par))))
+  return(list(error=error, weights=weights))
 }
 
-CombineBoxplot <- function(sat, qp.weights, deSig.weights, nmf.weights, spectrum, title) {
-  SSE <- function(weights) {
-    sum((spectrum - (cosmic %*% weights))^2)
+PlotCombinedWeights <- function(gsat, gsa.weights, qp.weights, deSig.weights, nmf.weights, spectrum, cosmic, title) {
+  #plots results of different methods on one plot
+  RSSE <- function(weights) {
+    DecompositionError(spectrum,weights,cosmic) #squared root of squared sum of errors
   }
-  weight.max = max(sat$weights, qp.weights, deSig.weights, nmf.weights)
-  subtitle = sprintf("GenSA %.5f, GenSA+error(median) %.5f, QP %.5f, deconstructSigs %.5f, NMF %.5f", sat$long$error, median(sat$error), sqrt(SSE(qp.weights)), sqrt(SSE(deSig.weights)), sqrt(SSE(nmf.weights)) )
-  boxplot(sat$weights, names=1:30, col='gray90', xlab='Signatures', ylab='Weights', main=title, sub=subtitle, las=2, ylim=c(0,1.05*weight.max))
+  #find max weight to set y-axis limits
+  weight.max = max(gsat$weights, gsa.weights, qp.weights, deSig.weights, nmf.weights, na.rm=T)
+  #generate subtitle listing error of each method
+  subtitle = sprintf("GenSA+error(median) %.5f, GenSA %.5f, QP %.5f, deconstructSigs %.5f, NMF %.5f",
+    median(gsat$error), RSSE(gsa.weights), RSSE(qp.weights), RSSE(deSig.weights), RSSE(nmf.weights))
+  #boxplot of GenSA trials with increased error
+  boxplot(gsat$weights, names=1:30, col='gray90', xlab='Signatures', ylab='Weights', main=title, sub=subtitle, las=2, ylim=c(0,1.05*weight.max))
+  #show optimal results of different methods
   points(nmf.weights, pch=6, col='darkorange')
-  points(deSig.weights, pch=5, col='limegreen')
-  points(qp.weights, pch=2, col='deepskyblue')
-  points(sat$long$weights, pch=1, col='firebrick1')
-  legend('topright', c('GenSA w/ error','GenSA','QP','deconstructSigs','NMF (12 sigs)'), col=c('gray90','firebrick1','deepskyblue','limegreen','darkorange'), pch=c(15,1,2,5,6))
+  points(deSig.weights, pch=2, col='limegreen')
+  points(qp.weights, pch=13, col='deepskyblue')
+  points(gsa.weights, pch=1, col='firebrick1')
+  legend('topright', c('GenSA w/ error','GenSA','QP','deconstructSigs','NMF - 12 sigs:','1,2,3,5,6,8,13,','17,18,20,26,30'),
+    col=c('gray90','firebrick1','deepskyblue','limegreen','darkorange',NA,NA), pch=c(15,1,13,2,6,NA,NA))
 }
 
-#Quadratic programming
-QuProg = QPsig(tumour.ref=spectra[,1], signatures.ref=t(cosmic))
+################################################################################
 
-#run deconstructSigs
-#match mutations order to that in package signatures!
-deSig = whichSignatures(tumor.ref=as.data.frame(t(spectra[match(colnames(signatures.cosmic),rownames(spectra)),1,drop=F])),
-  signatures.ref=signatures.cosmic, contexts.needed=T, signature.cutoff=0.0)
+sink('sa_GenSA.output')
 
-#NMF
-nmf.data = read.csv('../data/Table_SignatureContribution__SupplTab21.csv', check.names=F)
-nmf.data = rbind(nmf.data,c('All',colSums(nmf.data[,2:13]),NA)) #add summary row and name it 'All' (the same as in spectra)
-rownames(nmf.data) = nmf.data[,1]
-nmf.data = nmf.data[match(colnames(spectra),rownames(nmf.data)),2:13] #match sample names to that in file in spectra
-#nmf.data_sum = rowSums(nmf.data) # DO NOT WORK!!!
-nmf.data_sum = as.numeric(apply(nmf.data, 1, function(r) sum(as.numeric(r))))
-nmf.data = apply(nmf.data, 2, function(col) as.numeric(col)/nmf.data_sum)
-rownames(nmf.data) = colnames(spectra) #recover colnames
-nmf.weights = matrix(0, nrow=nrow(nmf.data), ncol=ncol(cosmic))
-colnames(nmf.weights) = colnames(cosmic)
-rownames(nmf.weights) = rownames(nmf.data)
-nmf.weights[,match(colnames(nmf.data), colnames(cosmic))] = nmf.data #match order of signature subset to that in cosmic
+### Read data ###
+#samples are in columns, mutation types in rows
+#cosmic matrix was downloaded from COSMIC website (96x30)
+cosmic = ReadMutationalProfile('data/cosmic_signatures_probabilities.txt')
+#spectra are precomputed mutational profiles for all 560 patiens and for a combined dataset (96x561)
+spectra = ReadMutationalProfile('data/mutation_spectra_BRCA-EU.txt')
+#match mutation type order to cosmic order as in file
+spectra = spectra[match(rownames(cosmic),rownames(spectra)), ,drop=F]
 
+### Other methods first ###
+
+### Quadratic programming
+#run QPsig for each column of spectra (it expects signatures in deconstructSigs form)
+#gets a 30x561 matrix of signature weights for each sample
+#some weights are negative, but very very close to 0 (e.g. -1e-20)
+QP = apply(spectra, 2, QPsig, t(cosmic))
+rownames(QP) = colnames(cosmic)
+write.csv(QP, file='weights/QP.csv')
+
+### deconstructSigs
+#Cosmic and signatures.cosmic matrices contains the same data.
+#They are just differently ordered, so watch out when passing parameters.
+#Match mutations order to that in package signatures!
+#set 'signature.cutoff' 0.0, so we do not miss any signature
+#ncol(spectra)
+deSig = do.call(cbind, lapply(seq(ncol(spectra)), function(i) {
+    ds = whichSignatures(tumor.ref=as.data.frame(t(spectra[match(colnames(signatures.cosmic),rownames(spectra)),i,drop=F])),
+      signatures.ref=signatures.cosmic, contexts.needed=T, signature.cutoff=0.0)
+    return(t(ds$weights))
+  }))
+rownames(deSig) = colnames(cosmic)
+write.csv(deSig, file='weights/deSig.csv')
+
+### NMF
+#read the supplementary table 21 by S. Nik-Zainal (Nature, 2016)
+#containing weights of signatures identified by NMF
+nmf.data = read.csv('data/Table_SignatureContribution__SupplTab21.csv', check.names=F)
+nmf.data_samples = nmf.data[,'Sample Name']
+nmf.data = as.matrix(nmf.data[,2:13]) #remove first and last column (not needed) and transform to matrix
+rownames(nmf.data) = nmf.data_samples
+nmf.data = rbind(nmf.data, All=colSums(nmf.data)) #add summary row and name it 'All' (the same as in spectra)
+nmf.data = nmf.data[match(colnames(spectra),rownames(nmf.data)),] #match sample names to that in file in spectra
+nmf.data = apply(nmf.data, 2, "/", rowSums(nmf.data))
+#create a new matrix with weights for all signatures and update based on nmf.data
+NMF = matrix(NA, nrow=ncol(cosmic), ncol=nrow(nmf.data),
+  dimnames=list(colnames(cosmic), rownames(nmf.data)))
+NMF[match(colnames(nmf.data), colnames(cosmic)),] = t(nmf.data)
+write.csv(NMF, file='weights/NMF.csv')
+
+### Simulated Annealing ###
+### Generalized Simulated Annealing by Y. Xiang (The R Journal, 2013) implemented in R package 'GenSA'
+
+#run long SA to determine best solution using default params
 set.seed(1234)
+print("Simulated annealing - long run")
+print(date())
+GSA = apply(spectra, 2, function(spectrum) {
+    gsa = RunGenSA(spectrum, cosmic, control=list(simple.function=T))
+    gsa$par/sum(gsa$par) #normalize to 1
+  })
+print(date())
+rownames(GSA) = colnames(cosmic)
+write.csv(GSA, file='weights/GenSA.csv')
 
+
+### Test GenSA  different levels of allowed error (only on combined data)
 print("Simulated annealing - testing different errors")
-date()
-sat0 = RunGenSATrialsWithIncreasedError(spectra[,1], cosmic, 1000, 0.001)
-sat1 = RunGenSATrialsWithIncreasedError(spectra[,1], cosmic, 1000, 0.01)
-sat2 = RunGenSATrialsWithIncreasedError(spectra[,1], cosmic, 1000, 0.05)
-sat3 = RunGenSATrialsWithIncreasedError(spectra[,1], cosmic, 1000, 0.1)
-date()
-pdf('boxplot_all_diff_errors.pdf', height=11, width=8.5)
-par(mfrow=c(2,1))
-CombineBoxplot(sat0, QuProg, as.numeric(deSig$weights), nmf.weights['All',], spectra[,1], paste0('Boxplots based on SA for best error + ',100*0.001,'%\n','All samples'))
-CombineBoxplot(sat1, QuProg, as.numeric(deSig$weights), nmf.weights['All',], spectra[,1], paste0('Boxplots based on SA for best error + ',100*0.01,'%\n','All samples'))
-CombineBoxplot(sat2, QuProg, as.numeric(deSig$weights), nmf.weights['All',], spectra[,1], paste0('Boxplots based on SA for best error + ',100*0.05,'%\n','All samples'))
-CombineBoxplot(sat3, QuProg, as.numeric(deSig$weights), nmf.weights['All',], spectra[,1], paste0('Boxplots based on SA for best error + ',100*0.1,'%\n','All samples'))
-par(mfrow=c(1,1))
-dev.off()
-
-
-print("Simulated annealing with increased error by 1%")
-#weights = list(GenSA = data.frame(), QP = data,frame(), decSigs = data.frame(), NMF = data.frame())
-date()
+print(date())
 set.seed(1234)
-pdf('boxplot_samples_error_0.01.pdf', height=11, width=8.5)
+pdf('plots/boxplot_all_diff_errors.pdf', height=11, width=8.5)
 par(mfrow=c(3,1))
-for(i in seq(ncol(spectra))) {
-  sample = colnames(spectra)[i]
-  print(sample)
-  qp = QPsig(tumour.ref=spectra[,i], signatures.ref=t(cosmic))
-  ds = whichSignatures(tumor.ref=as.data.frame(t(spectra[match(colnames(signatures.cosmic),rownames(spectra)),i,drop=F])), #match mutations order to that in package signatures!
-    signatures.ref=signatures.cosmic, contexts.needed=T, signature.cutoff=0.0)
-  sat = RunGenSATrialsWithIncreasedError(spectra[,i], cosmic, 100, 0.01)
-  CombineBoxplot(sat, qp, as.numeric(ds$weights), as.numeric(nmf.weights[sample,]), spectra[,i], colnames(spectra)[i])
-  # #remember weights
-  # weights$GenSA = rbind(weights$GenSA, sat$long$weights)
-  # weights$QP = rbind(weights$QP, qp)
-  # weights$decSigs = rbind(weights$decSigs, as.numeric(ds$weights))
-  # weights$NMF = rbind(weights$NMF, as.numeric(nmf.weights[sample,]))
+error.GSA.all = DecompositionError(spectra[,'All'], GSA[,'All'], cosmic)
+for(error.increase in c(0.001,0.01,0.05,0.1)) {
+  gsat = RunGenSATrialsWithDesiredError(spectra[,'All'], cosmic, 1000, (1+error.increase)*error.GSA.all)
+
+  PlotCombinedWeights(gsat, GSA[,'All'], QP[,'All'], deSig[,'All'], NMF[,'All'], spectra[,'All'], cosmic,
+    paste0('Boxplots based on SA for optimal GenSA error * ',1+error.increase,' (',100*error.increase,'%)','\n','All samples'))
 }
 par(mfrow=c(1,1))
 dev.off()
-date()
-# for(name in names(weights)) {
-#   colnames(weights[[name]]) = colnames(cosmic)
-#   rownames(weights[[name]]) = colnames(spectra)
-#   write.csv(weights[[name]], file=paste0('weights_',name,'.csv'), quote=F)
-# }
+print(date())
 
 
-print("Simulated annealing with increased error by 5%")
-date()
-set.seed(1234)
-pdf('boxplot_samples_error_0.05.pdf', height=11, width=8.5)
-par(mfrow=c(3,1))
-for(i in seq(ncol(spectra))) {
-  print(colnames(spectra)[i])
-  qp = QPsig(tumour.ref=spectra[,i], signatures.ref=t(cosmic))
-  ds = whichSignatures(tumor.ref=as.data.frame(t(spectra[match(colnames(signatures.cosmic),rownames(spectra)),i,drop=F])), #match mutations order to that in package signatures!
-    signatures.ref=signatures.cosmic, contexts.needed=T, signature.cutoff=0.0)
-  sat = RunGenSATrialsWithIncreasedError(spectra[,i], cosmic, 100, 0.05)
-  CombineBoxplot(sat, qp, as.numeric(ds$weights), as.numeric(nmf.weights[colnames(spectra)[i],]), spectra[,i], colnames(spectra)[i])
+### Simulated annealing with increased error by 1% and 5% for all samples
+for(error.increase in c(0.01,0.05)) {
+  print(sprintf("Simulated annealing with error increase by %.2f fold", 1+error.increase))
+  dir_weight = paste0('weights/GenSA_trials_error_',error.increase)
+  dir.create(dir_weight, showWarnings = FALSE)
+  print(date())
+  set.seed(1234)
+  pdf(paste0('plots/boxplot_samples_error_',error.increase,'.pdf'), height=11, width=8.5)
+  par(mfrow=c(3,1))
+  for(i in seq(ncol(spectra))) {
+    sample = colnames(spectra)[i]
+    error.GSA = DecompositionError(spectra[,i], GSA[,i], cosmic)
+    gsat = RunGenSATrialsWithDesiredError(spectra[,i], cosmic, 100, (1+error.increase)*error.GSA)
+    PlotCombinedWeights(gsat, GSA[,i], QP[,i], deSig[,i], NMF[,i], spectra[,i], cosmic,
+      paste0(sample,'(optimal GSA error * ',1+error.increase,')'))
+    write.csv(gsat$weights, paste0(dir_weight,'/',sample'.csv'))
+  }
+  par(mfrow=c(1,1))
+  dev.off()
+  print(date())
 }
-par(mfrow=c(1,1))
-dev.off()
-date()
 
 
 sink()
-
-
-
-
-# set.seed(1234)
-# gsa = RunGenSA(spectra[,1], cosmic, list(maxit=1000, nb.stop.im4rovement=10, simple.function=T, verbose=F))
-# list(error=gsa$value, fn.count=gsa$count, weights=gsa$par/sum(gsa$par))
-# write.table(gsa$trace.mat, file='trace.mat.txt', quote=F, sep='\t')
-# set.seed(1234)
-# gsa = RunGenSA(spectra[,1], cosmic, list(maxit=1000, nb.stop.improvement=10, temperature=100, simple.function=T, verbose=F))
-# list(error=gsa$value, fn.count=gsa$count, weights=gsa$par/sum(gsa$par))
-# write.table(gsa$trace.mat, file='trace.mat_temp100.txt', quote=F, sep='\t')
-
-# set.seed(1234)
-# date()
-# gsa = RunGenSA(spectra[,1], cosmic, list(maxit=1000, threshold.stop=0.008243543*1.01, temperature=100, simple.function=T, verbose=F))
-# list(error=gsa$value, fn.count=gsa$count, weights=gsa$par/sum(gsa$par))
-# date()
-
-
-
-
-
-
-
-
-#end
