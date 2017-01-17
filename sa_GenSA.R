@@ -92,7 +92,10 @@ spectra = spectra[match(rownames(cosmic),rownames(spectra)), ,drop=F]
 #run QPsig for each column of spectra (it expects signatures in deconstructSigs form)
 #gets a 30x561 matrix of signature weights for each sample
 #some weights are negative, but very very close to 0 (e.g. -1e-20)
+print('Quadratic programming')
+print(date())
 QP = apply(spectra, 2, QPsig, t(cosmic))
+print(date())
 rownames(QP) = colnames(cosmic)
 write.csv(QP, file='weights/QP.csv')
 
@@ -102,15 +105,20 @@ write.csv(QP, file='weights/QP.csv')
 #Match mutations order to that in package signatures!
 #set 'signature.cutoff' 0.0, so we do not miss any signature
 #ncol(spectra)
+print("deconstructSigs")
+print(date())
 deSig = do.call(cbind, lapply(seq(ncol(spectra)), function(i) {
     ds = whichSignatures(tumor.ref=as.data.frame(t(spectra[match(colnames(signatures.cosmic),rownames(spectra)),i,drop=F])),
       signatures.ref=signatures.cosmic, contexts.needed=T, signature.cutoff=0.0)
     return(t(ds$weights))
   }))
+print(date())
 rownames(deSig) = colnames(cosmic)
 write.csv(deSig, file='weights/deSig.csv')
 
 ### NMF
+print("NMF - read and process data")
+print(date())
 #read the supplementary table 21 by S. Nik-Zainal (Nature, 2016)
 #containing weights of signatures identified by NMF
 nmf.data = read.csv('data/Table_SignatureContribution__SupplTab21.csv', check.names=F)
@@ -125,6 +133,8 @@ NMF = matrix(NA, nrow=ncol(cosmic), ncol=nrow(nmf.data),
   dimnames=list(colnames(cosmic), rownames(nmf.data)))
 NMF[match(colnames(nmf.data), colnames(cosmic)),] = t(nmf.data)
 write.csv(NMF, file='weights/NMF.csv')
+print(date())
+
 
 ### Simulated Annealing ###
 ### Generalized Simulated Annealing by Y. Xiang (The R Journal, 2013) implemented in R package 'GenSA'
