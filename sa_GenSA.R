@@ -143,7 +143,10 @@ print(date())
 set.seed(1234)
 print("Simulated annealing - long run")
 print(date())
+i = 0
 GSA = apply(spectra, 2, function(spectrum) {
+    i <<- i+1
+    print(c(i,date()))
     gsa = RunGenSA(spectrum, cosmic, control=list(simple.function=T))
     gsa$par/sum(gsa$par) #normalize to 1
   })
@@ -160,6 +163,7 @@ pdf('plots/boxplot_all_diff_errors.pdf', height=11, width=8.5)
 par(mfrow=c(3,1))
 error.GSA.all = DecompositionError(spectra[,'All'], GSA[,'All'], cosmic)
 for(error.increase in c(0.001,0.01,0.05,0.1)) {
+  print(c(error.increase, date()))
   gsat = RunGenSATrialsWithDesiredError(spectra[,'All'], cosmic, 1000, (1+error.increase)*error.GSA.all)
 
   PlotCombinedWeights(gsat, GSA[,'All'], QP[,'All'], deSig[,'All'], NMF[,'All'], spectra[,'All'], cosmic,
@@ -181,11 +185,12 @@ for(error.increase in c(0.01,0.05)) {
   par(mfrow=c(3,1))
   for(i in seq(ncol(spectra))) {
     sample = colnames(spectra)[i]
+    print(c(sample,date()))
     error.GSA = DecompositionError(spectra[,i], GSA[,i], cosmic)
     gsat = RunGenSATrialsWithDesiredError(spectra[,i], cosmic, 100, (1+error.increase)*error.GSA)
     PlotCombinedWeights(gsat, GSA[,i], QP[,i], deSig[,i], NMF[,i], spectra[,i], cosmic,
       paste0(sample,'(optimal GSA error * ',1+error.increase,')'))
-    write.csv(gsat$weights, paste0(dir_weight,'/',sample'.csv'))
+    write.csv(gsat$weights, paste0(dir_weight,'/',sample,'.csv'))
   }
   par(mfrow=c(1,1))
   dev.off()
