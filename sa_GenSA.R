@@ -68,8 +68,9 @@ RunGenSA <- function(spectrum, signatures, control) {
 RunGenSATrialsWithDesiredError <- function(spectrum, signatures, N, desired.error) {
   #run N trials until reaching expected error to sample landscape of almost optimal solutions
   error = rep(0.0, N)
-  weights = matrix(0.0, ncol=ncol(signatures), nrow=N)
-  colnames(weights) = colnames(signatures)
+  weights = matrix(0.0, ncol=N, nrow=ncol(signatures))
+  rownames(weights) = colnames(signatures)
+  colnames(weights) = paste0('Trial_', seq(N))
   #repeat the simulation N times
   for(i in seq(N)) {
     #reduce maximum number of iterations of the algorithm (the algorithm restarts anyway after 1282 iterations)
@@ -80,7 +81,7 @@ RunGenSATrialsWithDesiredError <- function(spectrum, signatures, N, desired.erro
       threshold.stop=desired.error, nb.stop.improvement=1000, simple.function=T))
     #record results
     error[i] = sa$value
-    weights[i,] = sa$par/sum(sa$par) #normalize weights to 1
+    weights[,i] = sa$par/sum(sa$par) #normalize weights to 1
   }
   return(list(error=error, weights=weights))
 }
@@ -96,7 +97,8 @@ PlotCombinedWeights <- function(gsat, gsa.weights, qp.weights, deSig.weights, nm
   subtitle = sprintf("GenSA+error(median) %.5f, GenSA %.5f, QP %.5f, deconstructSigs %.5f, NMF %.5f",
     median(gsat$error), RSSE(gsa.weights), RSSE(qp.weights), RSSE(deSig.weights), RSSE(nmf.weights))
   #boxplot of GenSA trials with increased error
-  boxplot(gsat$weights, names=1:30, col='gray90', xlab='Signatures', ylab='Weights', main=title, sub=subtitle, las=2, ylim=c(0,1.05*weight.max))
+  names_sigs = sapply(strsplit(rownames(gsat$weights), ' '), '[', 2)
+  boxplot(t(gsat$weights), names=names_sigs, col='gray90', xlab='Signatures', ylab='Weights', main=title, sub=subtitle, las=2, ylim=c(0,1.05*weight.max))
   #show optimal results of different methods
   points(nmf.weights, pch=6, col='darkorange')
   points(deSig.weights, pch=2, col='limegreen')
@@ -119,6 +121,7 @@ cosmic = ReadMutationalProfile('data/cosmic_signatures_probabilities.txt')
 spectra = ReadMutationalProfile('data/mutation_spectra_BRCA-EU.txt')
 #match mutation type order to cosmic order as in file
 spectra = spectra[match(rownames(cosmic),rownames(spectra)), ,drop=F]
+
 
 ### Other methods first ###
 
@@ -199,7 +202,6 @@ error.GSA.all = DecompositionError(spectra[,'All'], GSA[,'All'], cosmic)
 for(error.increase in c(0.001,0.01,0.05,0.1)) {
   print(c(error.increase, date()))
   gsat = RunGenSATrialsWithDesiredError(spectra[,'All'], cosmic, 1000, (1+error.increase)*error.GSA.all)
-
   PlotCombinedWeights(gsat, GSA[,'All'], QP[,'All'], deSig[,'All'], NMF[,'All'], spectra[,'All'], cosmic,
     paste0('Boxplots based on SA for optimal GenSA error * ',1+error.increase,' (',100*error.increase,'%)','\n','All samples'))
 }

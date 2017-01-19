@@ -1,4 +1,5 @@
-.gitignore
 backup/
 code_github_GenSA/
-trace_test
+trace_test/
+weights/
+weights_BRCA/
